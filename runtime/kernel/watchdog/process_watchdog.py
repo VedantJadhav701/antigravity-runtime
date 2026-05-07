@@ -3,7 +3,7 @@ import time
 import logging
 from typing import Dict, Any, Optional
 from runtime.kernel.watchdog.timeout_policy import TimeoutPolicy
-from runtime.kernel.watchdog.termination import ProcessTerminator
+from runtime.kernel.watchdog.termination import terminate_process_tree
 
 logger = logging.getLogger("runtime.kernel.watchdog")
 
@@ -40,8 +40,8 @@ class ProcessWatchdog:
             logger.warning(f"Watchdog Violation: [{policy_name}] exceeded {timeout}s timeout. Initiating Escalation.")
             
             # ESCALATION: terminate() -> Wait 5s -> kill()
-            # ProcessTerminator.terminate handles the SIGTERM -> Wait 5s -> SIGKILL logic
-            await ProcessTerminator.terminate(process.pid, timeout_sec=5.0)
+            # Uses the v5.1 terminate_process_tree utility
+            await terminate_process_tree(process.pid, timeout_sec=5.0)
             
             execution_time = time.time() - start_time
             return {
@@ -54,7 +54,7 @@ class ProcessWatchdog:
         except Exception as e:
             logger.error(f"Unexpected error in watchdog for {policy_name}: {e}")
             if process.returncode is None:
-                await ProcessTerminator.terminate(process.pid, timeout_sec=1.0)
+                await terminate_process_tree(process.pid, timeout_sec=1.0)
             return {
                 "exit_code": -1,
                 "stdout": "",
