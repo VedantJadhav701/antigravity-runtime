@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "runtime-platform-core"
+version = "0.1.0"
+description = "Autonomous local engineering runtime core"
+authors = ["Vedant Jadhav <vedant@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.100.0"
+uvicorn = "^0.23.0"
+pydantic = "^2.0.0"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
