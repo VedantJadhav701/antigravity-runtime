@@ -1,0 +1,285 @@
+import asyncio
+import logging
+import os
+import time
+import json
+import shutil
+from typing import Dict, Optional, List, Any
+
+from runtime.kernel.execution_graph.schemas import ExecutionGraph, ExecutionNode, NodeStatus, TaskSpec
+from runtime.api.websocket.handler import TelemetryManager
+from runtime.api.schemas.tasks import ExecutionReport
+
+# Integration Imports
+from runtime.generation.scaffolder import ProjectScaffolder
+from runtime.environment.sandbox.venv_provider import VenvProvider
+from runtime.environment.validation.engine import ValidationEngine
+from runtime.kernel.lifecycle.repair_registry import RepairRegistry
+from runtime.kernel.lifecycle.confidence import ConfidenceEngine
+from runtime.environment.failure_taxonomy.definitions import FailureType
+
+logger = logging.getLogger("runtime.kernel.lifecycle")
+
+class LifecycleEngine:
+    """
+    The LifecycleEngine is the orchestration truth layer.
+    It implements the 6-step Autonomous Loop: Scaffold -> Bootstrap -> Provision -> Judge -> Self-Heal -> Finalize.
+    """
+    def __init__(self, telemetry: TelemetryManager, workspace_root: str = "."):
+        self.telemetry = telemetry
+        self.workspace_root = os.path.abspath(workspace_root)
+        self.active_graphs: Dict[str, ExecutionGraph] = {}
+        
+        # Initialize sub-components
+        templates_dir = os.path.join(self.workspace_root, "runtime", "generation", "templates")
+        self.scaffolder = ProjectScaffolder(templates_dir)
+        self.validator = ValidationEngine()
+        self.repair_registry = RepairRegistry()
+        self.confidence_engine = ConfidenceEngine()
+
+    async def run_task(self, task_spec: TaskSpec) -> ExecutionReport:
+        start_time = time.time()
+        graph_id = f"graph_{int(start_time)}"
+        
+        # 1. Initialize Graph
+        graph = ExecutionGraph(id=graph_id, nodes={}, state="IDLE")
+        self.active_graphs[graph_id] = graph
+        
+        session_dir = os.path.join(self.workspace_root, ".runtime", "sessions", graph_id)
+        os.makedirs(session_dir, exist_ok=True)
+
+        logger.info(f"Starting Autonomous Loop for {graph_id} (Project: {task_spec.project_type})")
+
+        last_execution_result = None
+        success = False
+        repair_count = 0
+        validation_history = []
+
+        try:
+            # STEP 1: SCAFFOLD
+            await self._transition(graph_id, "SCAFFOLDING")
+            node_scaffold = await self._add_node(graph_id, "SCAFFOLD", {"template_id": task_spec.template_id})
+            if not self.scaffolder.scaffold(task_spec.template_id, session_dir):
+                await self._update_node(graph_id, node_scaffold.id, NodeStatus.FAILED, error="Scaffolding failed")
+                raise RuntimeError(f"Scaffolding failed for template {task_spec.template_id}")
+            await self._update_node(graph_id, node_scaffold.id, NodeStatus.COMPLETED)
+
+            # STEP 2: BOOTSTRAP
+            await self._transition(graph_id, "BOOTSTRAPPING")
+            node_bootstrap = await self._add_node(graph_id, "BOOTSTRAP")
+            sandbox = VenvProvider(graph_id, session_dir)
+            if not await sandbox.bootstrap():
+                await self._update_node(graph_id, node_bootstrap.id, NodeStatus.FAILED, error="Bootstrap failed")
+                raise RuntimeError("Failed to bootstrap virtual environment")
+            await self._update_node(graph_id, node_bootstrap.id, NodeStatus.COMPLETED)
+
+            # STEP 3: PROVISION
+            await self._transition(graph_id, "PROVISIONING")
+            node_provision = await self._add_node(graph_id, "PROVISION", {"features": task_spec.features})
+            if task_spec.features:
+                logger.info(f"Installing requested features: {task_spec.features}")
+                for feature in task_spec.features:
+                    await sandbox.execute_command(f"python -m pip install {feature}")
+            await self._update_node(graph_id, node_provision.id, NodeStatus.COMPLETED)
+
+            # STEP 4-5: JUDGE & SELF-HEAL LOOP
+            max_loop_retries = 5
+            loop_count = 0
+
+            while loop_count < max_loop_retries:
+                # JUDGE (includes execution and validation)
+                node_judge = await self._add_node(graph_id, "JUDGE", {"attempt": loop_count})
+                validation_res, last_execution_result = await self._run_and_judge(graph_id, sandbox, session_dir, task_spec)
+                validation_history.append(validation_res)
+                
+                if validation_res.success:
+                    success = True
+                    await self._update_node(graph_id, node_judge.id, NodeStatus.COMPLETED, output=last_execution_result)
+                    break
+                
+                await self._update_node(graph_id, node_judge.id, NodeStatus.FAILED, output=last_execution_result, error="Validation failed")
+                
+                # SELF-HEAL
+                await self._transition(graph_id, "REPAIRING")
+                node_repair = await self._add_node(graph_id, "REPAIR", {"attempt": loop_count})
+                
+                repaired = False
+                # Use Failure Taxonomy for deterministic repair routing
+                for detail in validation_res.details:
+                    if not detail.success:
+                        logger.info(f"Routing repair for failure type: {detail.type}")
+                        repairers = self.repair_registry.get_repairers(detail.type)
+                        
+                        failure_context = {
+                            "stderr": last_execution_result.get("stderr", ""),
+                            "message": detail.message,
+                            "session_id": graph_id,
+                            "session_dir": session_dir
+                        }
+                        
+                        for repairer in repairers:
+                            if await repairer.repair(failure_context, sandbox):
+                                repaired = True
+                                repair_count += 1
+                                break
+                        if repaired:
+                            break
+                
+                if not repaired:
+                    await self._update_node(graph_id, node_repair.id, NodeStatus.FAILED, error="No repair strategy matched or all failed")
+                    logger.warning("No repair possible or repair failed.")
+                    break
+                
+                await self._update_node(graph_id, node_repair.id, NodeStatus.COMPLETED)
+                logger.info(f"Self-heal attempt {loop_count + 1} successful, re-judging...")
+                loop_count += 1
+
+            # Confidence Calculation
+            confidence = self.confidence_engine.calculate(
+                [d.model_dump() for d in validation_history[-1].details] if validation_history else [],
+                repair_count
+            )
+
+            # STEP 6: FINALIZE
+            final_state = "COMPLETED" if success else "FAILED"
+            await self._transition(graph_id, final_state)
+
+            report = ExecutionReport(
+                task_id=graph_id,
+                success=success,
+                execution_time=time.time() - start_time,
+                output=last_execution_result.get("stdout") if last_execution_result else None,
+                errors=[last_execution_result.get("stderr")] if last_execution_result and not success else [],
+                explainability_token=f"exp_{graph_id}"
+            )
+            
+            # Persist Flight Log and Artifacts
+            await self._persist_artifacts(graph_id, report, confidence)
+            return report
+
+        except Exception as e:
+            logger.error(f"Kernel Panic on {graph_id}: {str(e)}")
+            await self._transition(graph_id, "ROLLBACK")
+            report = ExecutionReport(
+                task_id=graph_id,
+                success=False,
+                execution_time=time.time() - start_time,
+                errors=[str(e)],
+                explainability_token=f"err_{graph_id}"
+            )
+            await self._persist_artifacts(graph_id, report, None)
+            return report
+
+    async def _run_and_judge(self, graph_id: str, sandbox: VenvProvider, session_dir: str, task_spec: TaskSpec) -> (Any, Dict[str, Any]):
+        """
+        Executes the entrypoint and validates the results.
+        Returns (ValidationResult, execution_result).
+        """
+        await self._transition(graph_id, "EXECUTING")
+        
+        result = await sandbox.execute_command("python -c \"import server\"")
+        
+        await self._transition(graph_id, "VALIDATING")
+        
+        # Validate artifacts
+        artifact_paths = [os.path.join(session_dir, "server.py")]
+        validation = self.validator.validate(result, artifact_paths)
+        
+        # Inject validation details into result stderr for repairers to see if not already there
+        if not validation.success:
+            val_errors = "\n".join([d.message for d in validation.details if not d.success])
+            result["stderr"] = (result.get("stderr", "") + "\n" + val_errors).strip()
+        
+        return validation, result
+
+    async def _transition(self, graph_id: str, new_state: str):
+        graph = self.active_graphs.get(graph_id)
+        if not graph:
+            return
+
+        old_state = graph.state
+        graph.state = new_state
+        
+        logger.info(f"Kernel Transition [{graph_id}]: {old_state} -> {new_state}")
+        
+        await self.telemetry.broadcast_event(
+            source="kernel",
+            phase=new_state,
+            event_type="state_transition",
+            message=f"Lifecycle transition: {old_state} -> {new_state}",
+            data={
+                "graph_id": graph_id,
+                "old_state": old_state,
+                "new_state": new_state
+            }
+        )
+
+    async def _add_node(self, graph_id: str, action: str, params: Dict[str, Any] = None) -> ExecutionNode:
+        graph = self.active_graphs.get(graph_id)
+        if not graph:
+            return None
+        node_id = f"node_{len(graph.nodes) + 1}"
+        node = ExecutionNode(id=node_id, action=action, params=params or {}, status=NodeStatus.RUNNING)
+        graph.nodes[node_id] = node
+        graph.active_node_id = node_id
+        
+        await self.telemetry.broadcast_event(
+            source="kernel",
+            phase=graph.state,
+            event_type="node_added",
+            message=f"Node added: {action}",
+            data={
+                "graph_id": graph_id,
+                "node": node.model_dump()
+            }
+        )
+        return node
+
+    async def _update_node(self, graph_id: str, node_id: str, status: NodeStatus, output: Any = None, error: str = None):
+        graph = self.active_graphs.get(graph_id)
+        if not graph:
+            return
+        node = graph.nodes.get(node_id)
+        if node:
+            node.status = status
+            node.output = output if isinstance(output, dict) else {"raw": str(output)} if output else None
+            node.error = error
+            
+            await self.telemetry.broadcast_event(
+                source="kernel",
+                phase=graph.state,
+                event_type="node_updated",
+                message=f"Node updated: {node.action} -> {status}",
+                data={
+                    "graph_id": graph_id,
+                    "node_id": node_id,
+                    "status": status,
+                    "output": node.output,
+                    "error": error
+                }
+            )
+
+    async def _persist_artifacts(self, graph_id: str, report: ExecutionReport, confidence: Optional[Any]):
+        """
+        Saves the full flight log and artifacts to the structured architecture.
+        """
+        graph = self.active_graphs.get(graph_id)
+        flight_log = {
+            "report": report.model_dump(),
+            "graph": graph.model_dump() if graph else None,
+            "confidence": confidence.model_dump() if confidence else None,
+            "timestamp": time.time()
+        }
+        
+        # 1. Save Execution Report
+        report_path = os.path.join(self.workspace_root, "runtime", "artifacts", "execution_reports", f"{graph_id}.json")
+        with open(report_path, "w") as f:
+            json.dump(flight_log, f, indent=2)
+            
+        # 2. Update Latest for Legacy Support (e.g. CLI/UI)
+        history_dir = os.path.join(self.workspace_root, ".runtime", "history")
+        os.makedirs(history_dir, exist_ok=True)
+        with open(os.path.join(history_dir, "report.json"), "w") as f:
+            json.dump(flight_log, f, indent=2)
+            
+        logger.info(f"Artifact Architecture persisted for {graph_id}")

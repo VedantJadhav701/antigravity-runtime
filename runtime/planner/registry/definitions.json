@@ -1,0 +1,47 @@
+{
+  "templates": {
+    "fastapi_basic": {
+      "id": "fastapi_basic",
+      "description": "Minimal FastAPI server with zero auth",
+      "supported_environments": ["python"],
+      "allowed_injectors": ["sqlite", "telemetry"]
+    },
+    "saas_starter": {
+      "id": "saas_starter",
+      "description": "Full-stack FastAPI + React starter",
+      "supported_environments": ["python", "node"],
+      "allowed_injectors": ["auth", "stripe", "postgres", "websocket"]
+    }
+  },
+  "injectors": {
+    "auth": {
+      "id": "auth",
+      "dependencies": ["pyjwt", "passlib"],
+      "conflicts": []
+    },
+    "stripe": {
+      "id": "stripe",
+      "dependencies": ["stripe"],
+      "conflicts": ["cli_tool"]
+    },
+    "postgres": {
+      "id": "postgres",
+      "dependencies": ["psycopg2-binary"],
+      "conflicts": ["sqlite"]
+    },
+    "sqlite": {
+      "id": "sqlite",
+      "dependencies": ["sqlite3"],
+      "conflicts": ["postgres"]
+    },
+    "telemetry": {
+      "id": "telemetry",
+      "dependencies": ["opentelemetry-api", "opentelemetry-sdk"],
+      "conflicts": []
+    }
+  },
+  "compatibility": {
+    "enforce_strict_types": true,
+    "allow_untested_combinations": false
+  }
+}
