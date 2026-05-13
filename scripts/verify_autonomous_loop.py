@@ -2,9 +2,9 @@ import asyncio
 import logging
 import os
 import shutil
-from runtime.kernel.lifecycle.engine import LifecycleEngine
-from runtime.kernel.execution_graph.schemas import TaskSpec
-from runtime.api.websocket.handler import TelemetryManager
+from agrt.kernel.lifecycle.engine import LifecycleEngine
+from agrt.kernel.execution_graph.schemas import TaskSpec
+from agrt.api.websocket.handler import TelemetryManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

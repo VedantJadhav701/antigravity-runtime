@@ -5,9 +5,9 @@ import shutil
 import json
 import subprocess
 import time
-from runtime.kernel.lifecycle.engine import LifecycleEngine
-from runtime.kernel.execution_graph.schemas import TaskSpec
-from runtime.api.websocket.handler import TelemetryManager
+from agrt.kernel.lifecycle.engine import LifecycleEngine
+from agrt.kernel.execution_graph.schemas import TaskSpec
+from agrt.api.websocket.handler import TelemetryManager
 
 # Configure logging for presentation clarity
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")

@@ -56,29 +56,65 @@ Antigravity Runtime orchestrates work through a bulletproof lifecycle:
 
 ## 🚀 Getting Started
 
-### 1. Prerequisites
-- [Ollama](https://ollama.ai/) (Running locally)
-- [Python 3.10+](https://www.python.org/)
-- [Node.js](https://nodejs.org/)
+Antigravity Runtime is distributed as globally installable infrastructure software.
 
-### 2. Launch the Platform
+### 1. Installation
+Install the runtime engine and CLI tools via `pip`:
 ```bash
-# Start the Backend Kernel
-$env:PYTHONPATH = "."; python runtime/api/server.py
-
-# Launch the Desktop HUD
-cd apps/desktop
-npm install && npm run dev
+pip install agrt
 ```
 
-### 3. Run the Flagship Showcase
-Experience the Failure → Repair → Success cycle in high-fidelity:
+### 2. Verify Infrastructure
+Ensure your local environment and required dependencies (like Ollama) are configured:
 ```bash
-# Engineering Audit Mode
-python scripts/golden_workflow.py
+agrt doctor
+```
 
-# Paced Demo Mode (Optimized for UI Replay)
-python scripts/demo_mode.py
+### 3. CLI Ecosystem
+The `agrt` CLI is the primary entry point for orchestrating autonomous workflows:
+```bash
+# Execute an autonomous template build
+agrt run --template fastapi_basic --features uvicorn fastapi
+
+# Validate the technical integrity of artifacts
+agrt validate .
+
+# List all autonomous execution sessions
+agrt list
+
+# Inspect a specific execution flight log
+agrt inspect graph_1778195994
+
+# View granular structured telemetry
+agrt logs graph_1778195994
+
+# Run operational performance benchmarks
+agrt benchmark
+```
+
+### 4. SDK Integration
+Integrate Antigravity Runtime directly into your infrastructure using the `agrt` Python SDK:
+```python
+from agrt import Runtime
+
+# Initialize the Runtime Kernel
+runtime = Runtime()
+
+# Dispatch an autonomous task
+report = runtime.run(
+    task="Build FastAPI backend with JWT auth",
+    template="fastapi_basic",
+    features=["fastapi", "uvicorn"]
+)
+
+print(f"Task ID: {report.task_id} | Success: {report.success}")
+```
+
+### 5. Desktop Observability (Optional)
+The optional React/Tauri Desktop HUD provides a graphical interface for Time-Travel Replay:
+```bash
+cd apps/desktop
+npm install && npm run dev
 ```
 
 ---

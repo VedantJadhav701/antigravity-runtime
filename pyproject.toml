@@ -4,8 +4,7 @@ version = "0.1.0"
 description = "Antigravity Runtime: Autonomous Local Execution Infrastructure"
 authors = ["Vedant Jadhav <vedant@example.com>"]
 packages = [
-    { include = "agrt" },
-    { include = "runtime" }
+    { include = "agrt" }
 ]
 
 [tool.poetry.dependencies]
@@ -15,7 +14,7 @@ uvicorn = "^0.23.0"
 pydantic = "^2.0.0"
 
 [tool.poetry.scripts]
-agrt = "runtime.cli.main:main"
+agrt = "agrt.cli:main"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
